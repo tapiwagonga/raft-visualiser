@@ -1,0 +1,640 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Raft visualiser</title>
+<style>
+  :root {
+    --bg: #0d0f14;
+    --surface: #161921;
+    --border: #252a36;
+    --text: #e2e8f0;
+    --muted: #64748b;
+    --follower: #334155;
+    --follower-stroke: #475569;
+    --candidate: #854d0e;
+    --candidate-stroke: #ca8a04;
+    --leader: #14532d;
+    --leader-stroke: #22c55e;
+    --crashed: #1c1c1e;
+    --crashed-stroke: #3f3f46;
+    --accent: #6366f1;
+    --font-mono: "JetBrains Mono", "Fira Code", ui-monospace, monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-mono);
+    font-size: 13px;
+    display: grid;
+    grid-template-rows: 48px 1fr;
+    grid-template-columns: 1fr 320px;
+    height: 100vh;
+    overflow: hidden;
+  }
+  header {
+    grid-column: 1 / -1;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    padding: 0 24px;
+    gap: 16px;
+  }
+  header h1 { font-size: 14px; font-weight: 600; letter-spacing: 0.05em; }
+  header .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); animation: pulse 2s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1}50%{opacity:0.3} }
+  .legend { display: flex; gap: 16px; margin-left: auto; align-items: center; }
+  .legend-item { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 11px; }
+  .legend-swatch { width: 10px; height: 10px; border-radius: 50%; border: 2px solid; }
+  .s-leader    { background: var(--leader);    border-color: #22c55e; }
+  .s-candidate { background: var(--candidate); border-color: #ca8a04; }
+  .s-follower  { background: var(--follower);  border-color: #475569; }
+  .s-crashed   { background: var(--crashed);   border-color: #3f3f46; }
+  #canvas-wrap {
+    position: relative;
+    display: flex; align-items: center; justify-content: center;
+    background: var(--bg);
+  }
+  svg#cluster { width: 100%; height: 100%; }
+  .node-ring { cursor: pointer; }
+  .node-bg { transition: fill 0.4s, stroke 0.4s; }
+  .node-label { font-family: var(--font-mono); font-size: 11px; font-weight: 600; fill: #e2e8f0; pointer-events: none; }
+  .node-state { font-family: var(--font-mono); font-size: 9px; fill: #94a3b8; pointer-events: none; text-transform: uppercase; letter-spacing: 0.08em; }
+  .node-term  { font-family: var(--font-mono); font-size: 9px; fill: #64748b; pointer-events: none; }
+  .msg-particle { pointer-events: none; }
+  #sidebar {
+    border-left: 1px solid var(--border);
+    display: grid;
+    grid-template-rows: auto 1fr auto;
+    overflow: hidden;
+    background: var(--surface);
+  }
+  #controls { padding: 16px; border-bottom: 1px solid var(--border); display: flex; flex-direction: column; gap: 10px; }
+  .control-label { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 4px; }
+  .btn-row { display: flex; gap: 8px; flex-wrap: wrap; }
+  button {
+    font-family: var(--font-mono); font-size: 11px; padding: 5px 10px;
+    border-radius: 4px; cursor: pointer; border: 1px solid var(--border);
+    background: var(--bg); color: var(--text); transition: background 0.15s, border-color 0.15s;
+  }
+  button:hover { background: #1e2330; border-color: #3a4150; }
+  button.danger { border-color: #7f1d1d; color: #fca5a5; }
+  button.danger:hover { background: #1c0a0a; }
+  button.success { border-color: #14532d; color: #86efac; }
+  button.success:hover { background: #0a1c0f; }
+  input[type="text"] {
+    font-family: var(--font-mono); font-size: 11px; background: var(--bg);
+    border: 1px solid var(--border); border-radius: 4px; color: var(--text);
+    padding: 5px 8px; width: 100%;
+  }
+  input[type="text"]:focus { outline: none; border-color: var(--accent); }
+  #event-log { overflow-y: auto; padding: 12px 16px; display: flex; flex-direction: column; gap: 4px; }
+  .log-entry {
+    display: grid; grid-template-columns: 16px 1fr; gap: 6px;
+    font-size: 11px; line-height: 1.5; animation: fadein 0.2s ease;
+  }
+  @keyframes fadein { from{opacity:0;transform:translateY(-4px)} to{opacity:1} }
+  .log-node-id { color: var(--accent); font-weight: 600; text-align: right; }
+  .log-text { color: var(--muted); }
+  .log-text .term { color: #475569; }
+  #status-bar {
+    padding: 10px 16px; border-top: 1px solid var(--border);
+    color: var(--muted); font-size: 10px; display: flex; justify-content: space-between;
+  }
+  #conn-status { display: flex; align-items: center; gap: 6px; }
+  #conn-dot { width: 6px; height: 6px; border-radius: 50%; background: #22c55e; }
+  #conn-dot.disconnected { background: #ef4444; }
+
+  /* Partition overlay button */
+  #partition-ui { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  select {
+    font-family: var(--font-mono); font-size: 11px; background: var(--bg);
+    border: 1px solid var(--border); border-radius: 4px; color: var(--text);
+    padding: 4px 6px;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="dot"></div>
+  <h1>raft visualiser</h1>
+  <div class="legend">
+    <div class="legend-item"><div class="legend-swatch s-leader"></div>leader</div>
+    <div class="legend-item"><div class="legend-swatch s-candidate"></div>candidate</div>
+    <div class="legend-item"><div class="legend-swatch s-follower"></div>follower</div>
+    <div class="legend-item"><div class="legend-swatch s-crashed"></div>crashed</div>
+  </div>
+</header>
+
+<div id="canvas-wrap">
+  <svg id="cluster" viewBox="0 0 600 500"></svg>
+</div>
+
+<div id="sidebar">
+  <div id="controls">
+    <div>
+      <div class="control-label">node actions (click node first)</div>
+      <div class="btn-row">
+        <button class="danger" onclick="crashSelected()">crash</button>
+        <button class="success" onclick="recoverSelected()">recover</button>
+      </div>
+    </div>
+    <div>
+      <div class="control-label">submit command to leader</div>
+      <input type="text" id="cmd-input" placeholder="SET foo bar" value="SET foo bar">
+      <div class="btn-row" style="margin-top:6px">
+        <button onclick="submitCommand()" class="success">submit ↵</button>
+      </div>
+    </div>
+    <div>
+      <div class="control-label">network partition</div>
+      <div id="partition-ui">
+        <select id="part-a" title="Node A"></select>
+        <span style="color:var(--muted); font-size:11px">↔</span>
+        <select id="part-b" title="Node B"></select>
+        <button class="danger" onclick="createPartition()">partition</button>
+        <button onclick="healPartition()">heal all</button>
+      </div>
+    </div>
+    <div>
+      <div class="control-label">network speed</div>
+      <div class="btn-row">
+        <button onclick="slowNetwork()">slow (300ms)</button>
+        <button onclick="fastNetwork()">fast (20ms)</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="event-log"></div>
+
+  <div id="status-bar">
+    <div id="conn-status"><div id="conn-dot" class="disconnected"></div><span id="conn-label">connecting…</span></div>
+    <div id="event-count">0 events</div>
+  </div>
+</div>
+
+<script>
+// ============================================================
+// Layout constants
+// ============================================================
+const SVG_W = 600, SVG_H = 500;
+const CX = SVG_W / 2, CY = SVG_H / 2;
+const RING_R = 155;
+const NODE_R = 38;
+const NUM_NODES = 5;
+
+function nodePos(id) {
+  const angle = (id / NUM_NODES) * 2 * Math.PI - Math.PI / 2;
+  return { x: CX + RING_R * Math.cos(angle), y: CY + RING_R * Math.sin(angle) };
+}
+
+// ============================================================
+// State
+// ============================================================
+const nodeState = {};
+let selectedNode = null;
+let eventCount = 0;
+let ws = null;
+// Track active partitions for drawing the partition line
+const activePartitions = new Set(); // "a-b" strings
+
+// ============================================================
+// SVG helpers
+// ============================================================
+const svg = document.getElementById("cluster");
+
+function svgEl(tag, attrs) {
+  const el = document.createElementNS("http://www.w3.org/2000/svg", tag);
+  for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v);
+  return el;
+}
+
+// Arc helpers for commit progress ring and timer ring
+function describeArc(cx, cy, r, startAngle, endAngle) {
+  const start = polarToCart(cx, cy, r, endAngle);
+  const end   = polarToCart(cx, cy, r, startAngle);
+  const large = endAngle - startAngle <= 180 ? "0" : "1";
+  return `M ${start.x} ${start.y} A ${r} ${r} 0 ${large} 0 ${end.x} ${end.y}`;
+}
+function polarToCart(cx, cy, r, deg) {
+  const rad = (deg - 90) * Math.PI / 180;
+  return { x: cx + r * Math.cos(rad), y: cy + r * Math.sin(rad) };
+}
+
+// ============================================================
+// Build SVG layers
+// ============================================================
+
+// 1. Edges (bottom)
+const edgeGroup = svgEl("g", { id: "edges" });
+svg.appendChild(edgeGroup);
+
+for (let a = 0; a < NUM_NODES; a++) {
+  for (let b = a + 1; b < NUM_NODES; b++) {
+    const pa = nodePos(a), pb = nodePos(b);
+    const line = svgEl("line", {
+      id: `edge-${a}-${b}`,
+      x1: pa.x, y1: pa.y, x2: pb.x, y2: pb.y,
+      stroke: "#1e2330", "stroke-width": "1", "stroke-dasharray": "4 4",
+    });
+    edgeGroup.appendChild(line);
+  }
+}
+
+// 2. Partition lines layer
+const partitionGroup = svgEl("g", { id: "partitions" });
+svg.appendChild(partitionGroup);
+
+// 3. Message particles
+const msgGroup = svgEl("g", { id: "messages" });
+svg.appendChild(msgGroup);
+
+// 4. Nodes (top)
+const nodeGroup = svgEl("g", { id: "nodes" });
+svg.appendChild(nodeGroup);
+
+for (let id = 0; id < NUM_NODES; id++) {
+  const { x, y } = nodePos(id);
+  const g = svgEl("g", { class: "node-ring", id: `node-${id}`, transform: `translate(${x},${y})` });
+
+  // --- FEATURE 1: Election timer countdown ring ---
+  // Full background track
+  const timerTrack = svgEl("circle", {
+    class: "timer-track", r: NODE_R + 10,
+    fill: "none", stroke: "#1e2330", "stroke-width": "3",
+  });
+  g.appendChild(timerTrack);
+
+  // Animated progress arc (drawn as a path, updated each tick)
+  const timerArc = svgEl("path", {
+    class: "timer-arc",
+    fill: "none", stroke: "#ca8a04", "stroke-width": "3",
+    "stroke-linecap": "round", opacity: "0",
+    d: "",
+  });
+  g.appendChild(timerArc);
+
+  // --- FEATURE 2: Commit index progress arc (outer ring) ---
+  const commitArc = svgEl("path", {
+    class: "commit-arc",
+    fill: "none", stroke: "#22c55e", "stroke-width": "2.5",
+    "stroke-linecap": "round", opacity: "0",
+    d: "",
+  });
+  g.appendChild(commitArc);
+
+  // Candidate vote-request dashed ring
+  const voteRing = svgEl("circle", {
+    class: "vote-ring", r: NODE_R + 6,
+    fill: "none", stroke: "#ca8a04", "stroke-width": "1.5",
+    "stroke-dasharray": "5 3", opacity: "0",
+  });
+  g.appendChild(voteRing);
+
+  // Main node body
+  const bg = svgEl("circle", {
+    class: "node-bg", r: NODE_R,
+    fill: "var(--follower)", stroke: "#475569", "stroke-width": "2",
+  });
+  g.appendChild(bg);
+
+  const label = svgEl("text", { class: "node-label", "text-anchor": "middle", dy: "-6" });
+  label.textContent = `N${id}`;
+  g.appendChild(label);
+
+  const stateEl = svgEl("text", { class: "node-state", "text-anchor": "middle", dy: "8" });
+  stateEl.textContent = "follower";
+  g.appendChild(stateEl);
+
+  const termEl = svgEl("text", { class: "node-term", "text-anchor": "middle", dy: "20" });
+  termEl.textContent = "t=0";
+  g.appendChild(termEl);
+
+  // Log length badge (bottom of node)
+  const logBadge = svgEl("text", {
+    class: "log-badge", "text-anchor": "middle", dy: NODE_R + 18,
+    "font-family": "var(--font-mono)", "font-size": "8", fill: "#475569",
+  });
+  logBadge.textContent = "log:0 ci:0";
+  g.appendChild(logBadge);
+
+  g.addEventListener("click", () => selectNode(id));
+  nodeGroup.appendChild(g);
+
+  nodeState[id] = { state: "follower", term: 0, crashed: false, log_length: 0, commit_index: 0 };
+}
+
+// ============================================================
+// Populate partition selects
+// ============================================================
+const partA = document.getElementById("part-a");
+const partB = document.getElementById("part-b");
+for (let i = 0; i < NUM_NODES; i++) {
+  partA.innerHTML += `<option value="${i}">N${i}</option>`;
+  partB.innerHTML += `<option value="${i}">N${i}</option>`;
+}
+partB.value = "1";
+
+// ============================================================
+// Node rendering
+// ============================================================
+const STATE_COLORS = {
+  leader:    { fill: "var(--leader)",    stroke: "#22c55e" },
+  candidate: { fill: "var(--candidate)", stroke: "#ca8a04" },
+  follower:  { fill: "var(--follower)",  stroke: "#475569" },
+  crashed:   { fill: "var(--crashed)",   stroke: "#3f3f46" },
+};
+
+// Max log length seen across all nodes (for normalising commit arc)
+let globalMaxLog = 1;
+
+function renderNode(id, data) {
+  const g = document.getElementById(`node-${id}`);
+  if (!g) return;
+
+  const displayState = data.crashed ? "crashed" : data.state;
+  const colors = STATE_COLORS[displayState] || STATE_COLORS.follower;
+
+  g.querySelector(".node-bg").setAttribute("fill", colors.fill);
+  g.querySelector(".node-bg").setAttribute("stroke", colors.stroke);
+  g.querySelector(".node-state").textContent = displayState;
+  g.querySelector(".node-term").textContent = `t=${data.term}`;
+  g.querySelector(".log-badge").textContent = `log:${data.log_length || 0} ci:${data.commit_index || 0}`;
+
+  // Vote ring visibility
+  g.querySelector(".vote-ring").setAttribute("opacity", data.state === "candidate" ? "1" : "0");
+
+  // --- FEATURE 2: Commit index arc ---
+  // Show as a green arc proportional to commit_index / log_length
+  const commitArc = g.querySelector(".commit-arc");
+  const logLen = data.log_length || 0;
+  const ci     = data.commit_index || 0;
+  if (logLen > 0 && !data.crashed) {
+    globalMaxLog = Math.max(globalMaxLog, logLen);
+    const frac = Math.min(ci / logLen, 1);
+    const deg  = frac * 359.9; // avoid full-circle SVG arc degeneracy
+    commitArc.setAttribute("d", describeArc(0, 0, NODE_R + 17, 0, deg));
+    commitArc.setAttribute("opacity", frac > 0 ? "0.85" : "0");
+  } else {
+    commitArc.setAttribute("opacity", "0");
+  }
+
+  // Selection ring
+  let sel = g.querySelector(".sel-ring");
+  if (id === selectedNode) {
+    if (!sel) {
+      sel = svgEl("circle", { class: "sel-ring", r: NODE_R + 24, fill: "none", stroke: "#6366f1", "stroke-width": "1.5", "stroke-dasharray": "3 3" });
+      g.insertBefore(sel, g.firstChild);
+    }
+  } else {
+    if (sel) sel.remove();
+  }
+}
+
+// --- FEATURE 1: Update timer countdown ring for a node ---
+function renderTimerArc(id, progress, state) {
+  const g = document.getElementById(`node-${id}`);
+  if (!g) return;
+  const arc = g.querySelector(".timer-arc");
+  const track = g.querySelector(".timer-track");
+
+  if (state === "leader" || state === "crashed") {
+    arc.setAttribute("opacity", "0");
+    track.setAttribute("opacity", "0");
+    return;
+  }
+
+  track.setAttribute("opacity", "1");
+  const deg = progress * 359.9;
+  arc.setAttribute("d", describeArc(0, 0, NODE_R + 10, 0, deg));
+  // Colour shifts amber → red as it fills up
+  const r = Math.round(202 + (239 - 202) * progress);
+  const gv = Math.round(138 - (138 * progress));
+  arc.setAttribute("stroke", `rgb(${r},${gv},4)`);
+  arc.setAttribute("opacity", progress > 0.05 ? "0.9" : "0");
+}
+
+function selectNode(id) {
+  selectedNode = id === selectedNode ? null : id;
+  for (let i = 0; i < NUM_NODES; i++) renderNode(i, nodeState[i] || {});
+}
+
+// ============================================================
+// FEATURE 3: Network partition line
+// ============================================================
+function redrawPartitions() {
+  partitionGroup.innerHTML = "";
+  if (activePartitions.size === 0) return;
+
+  // Collect all unique node pairs that are partitioned
+  for (const key of activePartitions) {
+    const [a, b] = key.split("-").map(Number);
+    const pa = nodePos(a), pb = nodePos(b);
+
+    // Draw a jagged lightning-bolt line across the midpoint of the two nodes
+    const mx = (pa.x + pb.x) / 2;
+    const my = (pa.y + pb.y) / 2;
+    const dx = pb.x - pa.x, dy = pb.y - pa.y;
+    const len = Math.sqrt(dx * dx + dy * dy);
+    const nx = -dy / len * 18, ny = dx / len * 18; // perpendicular offset
+
+    // Zigzag: mid-1 → jag-left → mid → jag-right → mid+1
+    const pts = [
+      { x: mx - dx * 0.2, y: my - dy * 0.2 },
+      { x: mx + nx * 0.8 - dx * 0.05, y: my + ny * 0.8 - dy * 0.05 },
+      { x: mx - nx * 0.8 + dx * 0.05, y: my - ny * 0.8 + dy * 0.05 },
+      { x: mx + dx * 0.2, y: my + dy * 0.2 },
+    ];
+    const d = `M ${pts[0].x} ${pts[0].y} L ${pts[1].x} ${pts[1].y} L ${pts[2].x} ${pts[2].y} L ${pts[3].x} ${pts[3].y}`;
+
+    const bolt = svgEl("path", {
+      d, fill: "none", stroke: "#ef4444", "stroke-width": "2.5",
+      "stroke-linecap": "round", "stroke-linejoin": "round",
+    });
+    partitionGroup.appendChild(bolt);
+
+    // Red X label in the middle
+    const lbl = svgEl("text", {
+      x: mx, y: my - 8,
+      "text-anchor": "middle", "font-family": "monospace", "font-size": "10",
+      fill: "#ef4444", "font-weight": "600",
+    });
+    lbl.textContent = "✕";
+    partitionGroup.appendChild(lbl);
+
+    // Dim the edge between the two nodes
+    const edgeKey = a < b ? `edge-${a}-${b}` : `edge-${b}-${a}`;
+    const edge = document.getElementById(edgeKey);
+    if (edge) edge.setAttribute("stroke", "#3f0f0f");
+  }
+}
+
+// ============================================================
+// Message animation
+// ============================================================
+const MSG_COLORS = {
+  vote_request:  "#7c3aed",
+  vote_response: "#a855f7",
+  heartbeat:     "#0369a1",
+  heartbeat_ack: "#0284c7",
+  log_entry:     "#065f46",
+  log_ack:       "#059669",
+};
+
+function animateMessage(fromId, toId, msgType) {
+  if (fromId == null || toId == null) return;
+  const from  = nodePos(fromId);
+  const to    = nodePos(toId);
+  const color = MSG_COLORS[msgType] || "#6366f1";
+  const isHb  = msgType === "heartbeat" || msgType === "heartbeat_ack";
+
+  const circle = svgEl("circle", {
+    class: "msg-particle",
+    r: isHb ? "3.5" : "5", fill: color, opacity: isHb ? "0.6" : "0.9",
+    cx: from.x, cy: from.y,
+  });
+  msgGroup.appendChild(circle);
+
+  const duration = 350;
+  const start    = performance.now();
+
+  function step(now) {
+    const t    = Math.min((now - start) / duration, 1);
+    const ease = t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t;
+    circle.setAttribute("cx", from.x + (to.x - from.x) * ease);
+    circle.setAttribute("cy", from.y + (to.y - from.y) * ease);
+    circle.setAttribute("opacity", (isHb ? 0.6 : 0.9) * (1 - t * 0.4));
+    if (t < 1) requestAnimationFrame(step);
+    else circle.remove();
+  }
+  requestAnimationFrame(step);
+}
+
+// ============================================================
+// Event log
+// ============================================================
+const logEl = document.getElementById("event-log");
+let totalEvents = 0;
+
+function addLogEntry(nodeId, text, term) {
+  totalEvents++;
+  document.getElementById("event-count").textContent = `${totalEvents} events`;
+  const entry = document.createElement("div");
+  entry.className = "log-entry";
+  entry.innerHTML = `<span class="log-node-id">${nodeId}</span><span class="log-text">${text} <span class="term">t${term}</span></span>`;
+  logEl.prepend(entry);
+  while (logEl.children.length > 100) logEl.lastChild.remove();
+}
+
+// ============================================================
+// WebSocket
+// ============================================================
+function connect() {
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  ws = new WebSocket(`${proto}://${location.host}/ws`);
+
+  ws.onopen = () => {
+    document.getElementById("conn-dot").classList.remove("disconnected");
+    document.getElementById("conn-label").textContent = "connected";
+  };
+
+  ws.onclose = () => {
+    document.getElementById("conn-dot").classList.add("disconnected");
+    document.getElementById("conn-label").textContent = "reconnecting…";
+    setTimeout(connect, 2000);
+  };
+
+  ws.onmessage = ({ data }) => {
+    const msg = JSON.parse(data);
+
+    if (msg.type === "snapshot") {
+      activePartitions.clear();
+      for (const pair of (msg.partition || [])) {
+        const [a, b] = pair;
+        activePartitions.add(`${Math.min(a,b)}-${Math.max(a,b)}`);
+      }
+      for (const n of msg.nodes) {
+        nodeState[n.node_id] = n;
+        renderNode(n.node_id, n);
+      }
+      redrawPartitions();
+      return;
+    }
+
+    if (msg.type === "event") {
+      const { node_id, state, term, event, msg_from, msg_to, msg_type,
+              crashed, log_length, commit_index, timer_progress } = msg;
+
+      // Silent timer tick — only update the arc, skip the log
+      if (event === "__timer__") {
+        renderTimerArc(node_id, timer_progress, state);
+        return;
+      }
+
+      nodeState[node_id] = {
+        ...nodeState[node_id], state, term,
+        crashed: crashed || false,
+        log_length: log_length || 0,
+        commit_index: commit_index || 0,
+      };
+      renderNode(node_id, nodeState[node_id]);
+      renderTimerArc(node_id, 0, state); // reset timer ring on real events
+
+      if (msg_from != null && msg_to != null && msg_type) {
+        animateMessage(msg_from, msg_to, msg_type);
+      }
+      addLogEntry(node_id, event, term);
+    }
+  };
+}
+
+// ============================================================
+// Controls
+// ============================================================
+function send(obj) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj)); }
+
+function crashSelected() {
+  if (selectedNode == null) return alert("Click a node first");
+  send({ action: "crash", node_id: selectedNode });
+}
+function recoverSelected() {
+  if (selectedNode == null) return alert("Click a node first");
+  send({ action: "recover", node_id: selectedNode });
+}
+function submitCommand() {
+  const cmd = document.getElementById("cmd-input").value.trim();
+  if (!cmd) return;
+  send({ action: "submit", command: cmd });
+}
+function createPartition() {
+  const a = parseInt(partA.value), b = parseInt(partB.value);
+  if (a === b) return alert("Choose two different nodes");
+  activePartitions.add(`${Math.min(a,b)}-${Math.max(a,b)}`);
+  redrawPartitions();
+  send({ action: "partition", node_a: a, node_b: b });
+}
+function healPartition() {
+  activePartitions.clear();
+  // Reset edge colours
+  for (let a = 0; a < NUM_NODES; a++)
+    for (let b = a+1; b < NUM_NODES; b++) {
+      const e = document.getElementById(`edge-${a}-${b}`);
+      if (e) e.setAttribute("stroke", "#1e2330");
+    }
+  redrawPartitions();
+  send({ action: "heal" });
+}
+function slowNetwork() { send({ action: "set_delay", delay_ms: 300 }); }
+function fastNetwork() { send({ action: "set_delay", delay_ms: 20 }); }
+
+document.getElementById("cmd-input").addEventListener("keydown", e => {
+  if (e.key === "Enter") submitCommand();
+});
+
+connect();
+</script>
+</body>
+</html>
