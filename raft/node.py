@@ -2,8 +2,8 @@ import asyncio
 import random
 import logging
 from enum import Enum
-from dataclasses import dataclass, field
-from typing import Optional, Callable, Awaitable
+from dataclasses import dataclass
+from typing import Optional, Callable
 
 from .messages import (
     VoteRequest, VoteResponse, Heartbeat, HeartbeatAck,
@@ -86,10 +86,6 @@ class RaftNode:
         # Whether this node is simulated as crashed
         self.crashed = False
 
-    # ------------------------------------------------------------------ #
-    # Lifecycle
-    # ------------------------------------------------------------------ #
-
     async def start(self):
         self._running = True
         await self._emit("node started")
@@ -113,10 +109,6 @@ class RaftNode:
         self.voted_for = None
         await self._emit("recovered")
         self._reset_election_timer()
-
-    # ------------------------------------------------------------------ #
-    # Message handling — called by Cluster when a message arrives
-    # ------------------------------------------------------------------ #
 
     async def handle_message(self, message: dict):
         if self.crashed:
@@ -247,10 +239,6 @@ class RaftNode:
             self.next_index[ack.follower_id]  = ack.match_index + 1
             await self._try_advance_commit()
 
-    # ------------------------------------------------------------------ #
-    # State transitions
-    # ------------------------------------------------------------------ #
-
     async def _start_election(self):
         if self.crashed:
             return
@@ -290,10 +278,6 @@ class RaftNode:
         self._cancel_timers()
         self._reset_election_timer()
         await self._emit(f"stepped down to follower at term {new_term}")
-
-    # ------------------------------------------------------------------ #
-    # Leader behaviour
-    # ------------------------------------------------------------------ #
 
     async def _heartbeat_loop(self):
         """Leader sends heartbeats to all peers every HEARTBEAT_INTERVAL."""
@@ -351,10 +335,6 @@ class RaftNode:
                 await self._emit(f"committed log up to index {n}")
                 break
 
-    # ------------------------------------------------------------------ #
-    # Election timer
-    # ------------------------------------------------------------------ #
-
     def _reset_election_timer(self):
         if self._election_timer_task:
             self._election_timer_task.cancel()
@@ -393,10 +373,6 @@ class RaftNode:
         if self._heartbeat_task:
             self._heartbeat_task.cancel()
 
-    # ------------------------------------------------------------------ #
-    # Helpers
-    # ------------------------------------------------------------------ #
-
     def _quorum(self) -> int:
         return (len(self.peer_ids) + 1) // 2 + 1
 
@@ -421,7 +397,7 @@ class RaftNode:
             commit_index=self.commit_index,
             event=event,
             msg_from=msg_from,
-            msg_to=msg_to if msg_to else self.node_id,
+            msg_to=msg_to if msg_to is not None else self.node_id,
             msg_type=msg_type,
         ), timer_progress=None)
 

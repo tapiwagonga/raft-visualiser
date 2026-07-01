@@ -31,7 +31,6 @@ class Cluster:
         self._broadcast_callbacks.append(cb)
 
     def remove_broadcast_listener(self, cb: Callable):
-        self._broadcast_callbacks.discard(cb) if hasattr(self._broadcast_callbacks, 'discard') else None
         if cb in self._broadcast_callbacks:
             self._broadcast_callbacks.remove(cb)
 
@@ -55,10 +54,6 @@ class Cluster:
 
     async def stop(self):
         await asyncio.gather(*[n.stop() for n in self.nodes.values()])
-
-    # ------------------------------------------------------------------ #
-    # Control actions (called from WebSocket message handlers)
-    # ------------------------------------------------------------------ #
 
     async def crash_node(self, node_id: int):
         if node_id in self.nodes:
@@ -101,10 +96,6 @@ class Cluster:
             "partition": list(self._partition),
             "network_delay_ms": int(self._network_delay * 1000),
         }
-
-    # ------------------------------------------------------------------ #
-    # Internal routing
-    # ------------------------------------------------------------------ #
 
     def _make_sender(self, from_id: int) -> Callable:
         """Returns a send_message function bound to from_id."""
